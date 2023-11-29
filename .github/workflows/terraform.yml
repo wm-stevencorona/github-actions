@@ -1,0 +1,83 @@
+on:
+    workflow_call:
+        inputs:
+            terraform_directory:
+                default: '.'
+                type: string
+            terraform_version:
+                default: '1.1.7'
+                type: string
+            terraform_outputs:
+                default: ''
+                type: string
+            apply_terraform:
+                default: true
+                type: boolean
+            environment:
+                default: 'dev'
+                type: string
+            runs-on:
+                default: 'self-hosted'
+                type: string
+
+jobs:
+    deploy_infrastructure:
+        runs-on: ${{ inputs.runs-on }}
+        name: Deploy Infrastructure
+        defaults:
+            run:
+                working-directory: ${{ inputs.terraform_directory }}
+        steps:
+        - uses: actions/checkout@v3
+        - name: Checkout Code and Setup Environment
+          run: |
+            echo "CLIENT_ID_VAR=ARM_CLIENT_ID_${{ inputs.environment }}" >> $GITHUB_ENV
+            echo "CLIENT_SECRET_VAR=ARM_CLIENT_SECRET_${{ inputs.environment }}" >> $GITHUB_ENV
+            echo "SUBSCRIPTION_ID_VAR=ARM_SUBSCRIPTION_ID_${{ inputs.environment }}" >> $GITHUB_ENV
+            echo "TENANT_ID_VAR=ARM_TENANT_ID_${{ inputs.environment }}" >> $GITHUB_ENV
+            echo "ARM_CLIENT_ID=${{secrets[format('{0}', env.CLIENT_ID_VAR)] }}" >> $GITHUB_ENV
+            echo "ARM_CLIENT_SECRET=${{secrets[format('{0}', env.CLIENT_SECRET_VAR)] }}" >> $GITHUB_ENV
+            echo "ARM_SUBSCRIPTION_ID=${{secrets[format('{0}', env.SUBSCRIPTION_ID_VAR)] }}" >> $GITHUB_ENV
+            echo "ARM_TENANT_ID=${{secrets[format('{0}', env.TENANT_ID_VAR)] }}" >> $GITHUB_ENV
+        - uses: hashicorp/setup-terraform@v2
+          with:
+            terraform_wrapper: false
+            terraform_version: ${{ inputs.terraform_version }}
+        - name: Install Azure cli
+          run: |
+              sudo apt-get -y install zip ca-certificates curl apt-transport-https lsb-release gnupg
+              curl -sL https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor | sudo tee /etc/apt/trusted.gpg.d/microsoft.gpg > /dev/null
+              AZ_REPO=$(lsb_release -cs)
+              echo "deb [arch=amd64] https://packages.microsoft.com/repos/azure-cli/ $AZ_REPO main" | sudo tee /etc/apt/sources.list.d/azure-cli.list
+              sudo apt-get update
+              sudo apt-get -y install azure-cli
+      
+        - name: Log in with Azure
+          uses: Azure/login@v1
+          with:
+              creds: '{"clientId":"${{ env.ARM_CLIENT_ID }}","clientSecret":"${{ env.ARM_CLIENT_SECRET }}","subscriptionId":"${{ env.ARM_SUBSCRIPTION_ID }}","tenantId":"${{ env.ARM_TENANT_ID }}"}'
+
+        - name: Terraform Init
+          id: init
+          run: terraform init -upgrade -backend-config=${{ inputs.environment || 'dev' }}.azure.tfbackend -reconfigure
+        
+        - name: Terraform Plan
+          id: plan
+          run: terraform plan --var-file=${{ inputs.environment || 'dev' }}.tfvars
+        
+        - name: Terraform Apply
+          if: ${{ inputs.apply_terraform }} == true
+          id: apply
+          run: terraform apply --var-file=${{ inputs.environment || 'dev' }}.tfvars --auto-approve
+
+        - name: Terraform Output Variables
+          if: ${{ inputs.terraform_outputs }} != ''
+          id: output
+          run: |
+            IFS=',' read -ra TFOUT <<< ${{ inputs.terraform_outputs}}
+            for i in "${TFOUT[@]}"; do
+                # Set VARIABLE NAME
+                tf_var="TF_OUTPUT_${i^^}"
+                # Output to Github Env
+                echo "$tf_var=${terraform output $i}" >> $GITHUB_ENV
+            done
