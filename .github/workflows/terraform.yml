@@ -22,6 +22,8 @@ on:
 
 jobs:
     deploy_infrastructure:
+
+        
         runs-on: ${{ inputs.runs-on }}
         name: Deploy Infrastructure
         defaults:
